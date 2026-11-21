@@ -52,7 +52,9 @@ PRODUCT_OR_DRUG = re.compile(
     r"エピディオレックス|Epidiolex|サティベックス|Sativex|ナビキシモルス|nabiximols|"
     r"ドロナビノール|dronabinol|マリノール|Marinol|シンドロス|Syndros|ナビロン|nabilone|Cesamet|"
     r"カンナビジオール|cannabidiol|\bCBD\b|\bTHC\b|テトラヒドロカンナビノール|"
-    r"大麻由来(の)?医薬品|製品名|商品名", re.I)
+    r"製品名|商品名", re.I)
+# Names only. The generic class "大麻由来医薬品" is the bot's in-scope subject
+# (制度・研究・政策提言), so it is deliberately not a drug name here.
 EFFICACY = re.compile(r"効く|効い|効き|効果|効能|治る|治り|治っ|改善|軽減|緩和")
 PATIENT_VOICE = re.compile(
     r"患者(さん)?の声|当事者の声|体験談|体験|私は|私の|家族の声|娘|息子|闘病|証言|インタビュー")

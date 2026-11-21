@@ -82,6 +82,35 @@ class Assess(unittest.TestCase):
         self.assertEqual({"decision": "hold", "reasons": ["topic:abroad"]},
                          review.assess(draft, NOW, NOW - timedelta(days=100)))
 
+    def test_out_of_scope_topics_hold_forever(self):
+        """Owner decision 2026-11-22 (Legal memo): the bot starts with 制度・研究・
+        政策提言 only. Patient voices, product or drug names and use abroad are
+        held for a human at any age of the account, not only in the first 4 weeks."""
+        d = review.DISCLAIMER
+        cases = {
+            "patient-voice": "患者さんの声を紹介します。制度の見直しを求めています。",
+            "product-or-drug": "エピディオレックスの承認審査について。" + d,
+            "abroad": "カナダの医療用大麻制度について。" + d,
+        }
+        for topic, text in cases.items():
+            for weeks in (5, 52, 520):
+                got = review.assess({"text": text + " " + SRC}, NOW, NOW - timedelta(weeks=weeks))
+                self.assertEqual("hold", got["decision"], (topic, weeks))
+                self.assertIn("topic:" + topic, got["reasons"], (topic, weeks))
+                self.assertNotIn("initial-period", got["reasons"])
+
+    def test_in_scope_policy_post_needs_no_approval_after_week_4(self):
+        text = "大麻由来医薬品の治験の拡大を求めるパブリックコメントの募集が始まりました。 " + SRC
+        self.assertEqual({"decision": "send", "reasons": []},
+                         review.assess({"text": text}, NOW, NOW - timedelta(weeks=5)))
+
+    def test_there_is_no_reply_path(self):
+        import aozora_post as ap
+        import tick as tk
+        for mod in (review, ap, tk):
+            self.assertFalse([n for n in dir(mod) if "reply" in n.lower() and n != "referral_reply"],
+                             mod.__name__)
+
     def test_drug_or_abroad_without_disclaimer_must_be_fixed(self):
         draft = {"text": "ドイツの医療用大麻の制度。 " + SRC}
         self.assertEqual({"decision": "fix", "reasons": ["disclaimer-required"]},
