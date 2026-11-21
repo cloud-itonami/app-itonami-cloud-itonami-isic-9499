@@ -1,8 +1,13 @@
+import io
+import json
 import shutil
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
+import aozora_identity
 import aozora_post
 import watch_sources
 from review_store import Store
@@ -10,7 +15,19 @@ from review_store import Store
 NOW = datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc)
 SRC = "https://www.mhlw.go.jp/content/11120000/001302699.pdf"
 GOOD = {"text": "施行通知が公開されています。 " + SRC, "sources": [SRC]}
-CREDS = {"AOZORA_IDENTIFIER": "bot.example", "AOZORA_APP_PASSWORD": "test-value"}
+CREDS = {"AOZORA_AGENT_SEED_B64URL": "test-seed"}
+BOT = "did:key:z6MkTestBot"
+
+
+def fake_identity(env):
+    """Stands in for the real Biscuit step (aozora_identity.biscuit_for_post):
+    no Keychain, no network."""
+    if not env.get("AOZORA_AGENT_SEED_B64URL"):
+        raise aozora_identity.NotConfigured("no Keychain item")
+    return {"token": "biscuit-token", "did": BOT, "expiresAt": "2099-01-01T00:00:00Z"}
+
+
+aozora_post.IDENTITY = fake_identity
 # A first post five weeks ago: past the initial all-approval period.
 OLD = {"at": (NOW - timedelta(weeks=5)).isoformat(), "hash": "0", "sources": []}
 
@@ -29,9 +46,7 @@ class FakePds:
 
     def __call__(self, url, body, headers):
         self.calls.append((url, body, headers))
-        if url.endswith("createSession"):
-            return {"did": "did:web:pds.example:bot", "accessJwt": "jwt"}
-        return {"uri": "at://did:web:pds.example:bot/app.bsky.feed.post/1", "cid": "bafy"}
+        return {"uri": "at://did:key:z6MkTestBot/app.bsky.feed.post/1", "cid": "bafy"}
 
 
 class Run(unittest.TestCase):
@@ -57,7 +72,7 @@ class Run(unittest.TestCase):
     def test_without_credentials_is_dry_run(self):
         state = settled()
         code, result = aozora_post.run(GOOD, state, NOW, True, {}, self.store, http=no_network)
-        self.assertEqual((0, "dry-run", "credentials not set"),
+        self.assertEqual((0, "dry-run", "identity not set (no Keychain item)"),
                          (code, result["status"], result["why"]))
         self.assertEqual([OLD], state["posts"])
         self.assertEqual("app.bsky.feed.post", result["record"]["$type"])
@@ -67,12 +82,13 @@ class Run(unittest.TestCase):
         code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, self.store,
                                        pds="https://pds.example", http=pds)
         self.assertEqual((0, "posted"), (code, result["status"]))
-        self.assertEqual(["https://pds.example/xrpc/com.atproto.server.createSession",
-                          "https://pds.example/xrpc/com.atproto.repo.createRecord"],
+        self.assertEqual(["https://pds.example/xrpc/com.atproto.repo.createRecord"],
                          [c[0] for c in pds.calls])
-        _, body, headers = pds.calls[1]
-        self.assertEqual("did:web:pds.example:bot", body["repo"])
-        self.assertEqual("Bearer jwt", headers["Authorization"])
+        _, body, headers = pds.calls[0]
+        self.assertEqual("did:key:z6MkTestBot", body["repo"])
+        self.assertEqual("Bearer biscuit-token", headers["Authorization"])
+        self.assertEqual(aozora_post.BOT_LABELS, body["record"]["labels"])
+        self.assertNotIn("reply", body["record"])
         self.assertEqual(GOOD["text"], body["record"]["text"])
         self.assertEqual(2, len(state["posts"]))
         self.assertEqual(result["uri"], state["posts"][1]["uri"])
@@ -89,8 +105,37 @@ class Run(unittest.TestCase):
             raise RuntimeError("secret detail")
         state = settled()
         code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, self.store, http=failing)
-        self.assertEqual((2, {"status": "send-failed", "error": "RuntimeError"}), (code, result))
+        self.assertEqual((2, {"status": "send-failed", "step": "createRecord",
+                              "error": "RuntimeError"}), (code, result))
         self.assertEqual([OLD], state["posts"])
+
+    def test_pds_error_keeps_status_and_code_only(self):
+        def limited(url, *_a):
+            body = io.BytesIO(b'{"error": "agent_rate_limited", "message": "detail"}')
+            raise urllib.error.HTTPError(url, 429, "Too Many", {}, body)
+        state = settled()
+        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, self.store, http=limited)
+        self.assertEqual((2, 429, "agent_rate_limited"),
+                         (code, result["http_status"], result["code"]))
+        self.assertNotIn("detail", json.dumps(result))
+        self.assertEqual([OLD], state["posts"])
+
+    def test_biscuit_failure_is_a_send_failure(self):
+        def broken(env):
+            raise aozora_identity.IdentityError("did-key/session", 401, "invalid_cacao")
+        with mock.patch.object(aozora_post, "IDENTITY", broken):
+            code, result = aozora_post.run(GOOD, settled(), NOW, True, CREDS, self.store,
+                                           http=no_network)
+        self.assertEqual((2, "send-failed", "did-key/session", 401, "invalid_cacao"),
+                         (code, result["status"], result["step"], result["http_status"],
+                          result["code"]))
+
+    def test_posting_disabled_touches_neither_keychain_nor_network(self):
+        with mock.patch.object(aozora_post, "IDENTITY", no_network):
+            code, result = aozora_post.run(GOOD, settled(), NOW, True, CREDS, self.store,
+                                           http=no_network, enabled=False)
+        self.assertEqual((0, "dry-run"), (code, result["status"]))
+        self.assertEqual(aozora_post.BOT_LABELS, result["record"]["labels"])
 
     def test_link_facet_uses_utf8_byte_offsets(self):
         facet = aozora_post.build_record(GOOD["text"], NOW)["facets"][0]

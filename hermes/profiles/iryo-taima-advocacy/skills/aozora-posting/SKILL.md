@@ -57,6 +57,7 @@ description: Use when posting a sourced summary on aozora.app (pds.aozora.app) a
 
 ## 確認していないこと
 
-`pds.aozora.app` に対する送信は、この skill を書いた時点で実行していない。
-`createSession` は AT Protocol の標準形（identifier と password）で呼ぶ。
-PDS がこのアカウントに別の形だけを受け付ける場合、`send-failed` になる。そのときは owner に報告する。
+`pds.aozora.app` に対する送信は、この skill を書いた時点で実行していない（2026-11-22）。
+送信はパスワードを使わない。投稿のたびに、bot 自身の did:key を auth.kotoba.cloud で証明し、15 分の Biscuit（`repo:post` だけ）を取り直して `createRecord` する（`scripts/aozora_identity.py`、network-awai/app-kotoba-cloud `docs/agent-identity.md` §8）。did:key の秘密鍵は Keychain だけにある。読まない、表示しない、書かない。
+投稿には self-label `bot` が自動で付く。返信はしない（PDS も bot の返信を拒否する）。
+`send-failed` には `step`、`http_status`、`code`（例: `agent_rate_limited`、`agent_suspended`、`biscuit_signature_invalid`）が付く。そのまま報告し、同じ実行で再試行しない。

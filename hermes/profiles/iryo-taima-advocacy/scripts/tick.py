@@ -3,8 +3,10 @@
 1. Send the oldest draft an approver approved (at most one per tick), after
    post_guard runs again. A rejected or pending draft is never sent. Real
    sending also needs "posting_enabled": true in review_config.json and the
-   Aozora credentials in the environment; otherwise the attempt is a dry run
-   and the draft stays approved for the next tick.
+   bot's did:key seed in the Keychain; otherwise the attempt is a dry run and
+   the draft stays approved for the next tick. Each send takes its own fresh
+   15-minute repo:post Biscuit (nonce -> did:key proof -> Biscuit -> post,
+   aozora_identity.py); nothing is saved between ticks. Never a reply.
 2. Refresh workspace/review/tick-status.json (tick_status.py) and apply the
    daily murakumo budget: at most max_murakumo_turns_per_day turns per JST day
    (4; in-run retries count), and daily_budget_usd (1 USD) at usd_per_turn
