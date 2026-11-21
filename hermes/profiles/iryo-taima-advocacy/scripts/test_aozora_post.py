@@ -106,10 +106,20 @@ class Watch(unittest.TestCase):
     def test_select_new_filters_by_keyword_and_seen(self):
         items = watch_sources.parse_items(RDF)
         self.assertEqual(["https://public-comment.e-gov.go.jp/a", "https://www.pmda.go.jp/c"],
-                         [i["link"] for i in watch_sources.select_new(items, set())])
+                         [i["link"] for i in watch_sources.select_new(items, {})])
+
+    def test_item_is_reported_again_until_the_limit(self):
+        items = watch_sources.parse_items(RDF)
+        a = "https://public-comment.e-gov.go.jp/a"
+        below = {a: watch_sources.MAX_REPORTS - 1}
+        self.assertIn(a, [i["link"] for i in watch_sources.select_new(items, below)])
+        at_limit = {a: watch_sources.MAX_REPORTS}
         self.assertEqual(["https://www.pmda.go.jp/c"],
-                         [i["link"] for i in watch_sources.select_new(
-                             items, {"https://public-comment.e-gov.go.jp/a"})])
+                         [i["link"] for i in watch_sources.select_new(items, at_limit)])
+
+    def test_first_state_format_counts_as_done(self):
+        reported = watch_sources.load_reported({"seen": ["https://x/a"], "reported": {"https://x/b": 1}})
+        self.assertEqual({"https://x/a": watch_sources.MAX_REPORTS, "https://x/b": 1}, reported)
 
 
 if __name__ == "__main__":

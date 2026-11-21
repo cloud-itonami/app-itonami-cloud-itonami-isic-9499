@@ -1,6 +1,7 @@
 {
   "jobs": [
     {
+      "id": "1a7a0ad0c4c1",
       "base_url": null,
       "context_from": null,
       "deliver": "local",
