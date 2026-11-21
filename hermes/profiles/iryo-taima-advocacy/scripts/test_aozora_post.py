@@ -1,13 +1,22 @@
+import shutil
+import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aozora_post
 import watch_sources
+from review_store import Store
 
 NOW = datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc)
 SRC = "https://www.mhlw.go.jp/content/11120000/001302699.pdf"
 GOOD = {"text": "施行通知が公開されています。 " + SRC, "sources": [SRC]}
 CREDS = {"AOZORA_IDENTIFIER": "bot.example", "AOZORA_APP_PASSWORD": "test-value"}
+# A first post five weeks ago: past the initial all-approval period.
+OLD = {"at": (NOW - timedelta(weeks=5)).isoformat(), "hash": "0", "sources": []}
+
+
+def settled():
+    return {"posts": [dict(OLD)]}
 
 
 def no_network(*_a, **_k):
@@ -26,29 +35,36 @@ class FakePds:
 
 
 class Run(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.store = Store(self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
     def test_refused_draft_sends_nothing(self):
         state = {"posts": []}
         code, result = aozora_post.run({"text": "入手方法を紹介 " + SRC, "sources": [SRC]},
-                                       state, NOW, True, CREDS, http=no_network)
+                                       state, NOW, True, CREDS, self.store, http=no_network)
         self.assertEqual(1, code)
         self.assertEqual("refused", result["status"])
         self.assertEqual([], state["posts"])
 
     def test_without_execute_is_dry_run(self):
-        code, result = aozora_post.run(GOOD, {"posts": []}, NOW, False, CREDS, http=no_network)
+        code, result = aozora_post.run(GOOD, settled(), NOW, False, CREDS, self.store, http=no_network)
         self.assertEqual((0, "dry-run", "no --execute"), (code, result["status"], result["why"]))
 
     def test_without_credentials_is_dry_run(self):
-        state = {"posts": []}
-        code, result = aozora_post.run(GOOD, state, NOW, True, {}, http=no_network)
+        state = settled()
+        code, result = aozora_post.run(GOOD, state, NOW, True, {}, self.store, http=no_network)
         self.assertEqual((0, "dry-run", "credentials not set"),
                          (code, result["status"], result["why"]))
-        self.assertEqual([], state["posts"])
+        self.assertEqual([OLD], state["posts"])
         self.assertEqual("app.bsky.feed.post", result["record"]["$type"])
 
     def test_execute_posts_and_records(self):
-        pds, state = FakePds(), {"posts": []}
-        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS,
+        pds, state = FakePds(), settled()
+        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, self.store,
                                        pds="https://pds.example", http=pds)
         self.assertEqual((0, "posted"), (code, result["status"]))
         self.assertEqual(["https://pds.example/xrpc/com.atproto.server.createSession",
@@ -58,23 +74,23 @@ class Run(unittest.TestCase):
         self.assertEqual("did:web:pds.example:bot", body["repo"])
         self.assertEqual("Bearer jwt", headers["Authorization"])
         self.assertEqual(GOOD["text"], body["record"]["text"])
-        self.assertEqual(1, len(state["posts"]))
-        self.assertEqual(result["uri"], state["posts"][0]["uri"])
+        self.assertEqual(2, len(state["posts"]))
+        self.assertEqual(result["uri"], state["posts"][1]["uri"])
 
     def test_second_identical_post_is_refused_from_state(self):
-        pds, state = FakePds(), {"posts": []}
-        aozora_post.run(GOOD, state, NOW, True, CREDS, http=pds)
-        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, http=no_network)
+        pds, state = FakePds(), settled()
+        aozora_post.run(GOOD, state, NOW, True, CREDS, self.store, http=pds)
+        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, self.store, http=no_network)
         self.assertEqual(1, code)
         self.assertIn("duplicate-text", result["reasons"])
 
     def test_send_failure_records_nothing_and_hides_detail(self):
         def failing(*_a, **_k):
             raise RuntimeError("secret detail")
-        state = {"posts": []}
-        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, http=failing)
+        state = settled()
+        code, result = aozora_post.run(GOOD, state, NOW, True, CREDS, self.store, http=failing)
         self.assertEqual((2, {"status": "send-failed", "error": "RuntimeError"}), (code, result))
-        self.assertEqual([], state["posts"])
+        self.assertEqual([OLD], state["posts"])
 
     def test_link_facet_uses_utf8_byte_offsets(self):
         facet = aozora_post.build_record(GOOD["text"], NOW)["facets"][0]

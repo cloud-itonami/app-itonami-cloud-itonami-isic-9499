@@ -30,6 +30,8 @@ description: Use when posting a sourced summary on aozora.app (pds.aozora.app) a
 - 何が起きたかを先に書く: 誰が、何を、いつ。意見募集なら締切。
 - 出典の URL は本文に 1 つ、`sources` にも同じものを入れる。許可された出典は `scripts/post_guard.py` の `ALLOWED_SOURCE_HOSTS`。
 - 評価の言葉を足さない。資料に書いていないことを書かない。
+- 医薬品・製品・海外の制度に触れるときは、上の注記を本文に入れる。
+- `queued` は失敗ではない。人が承認するまで待つ。同じ実行で言い換えて再提出しない。
 - ハッシュタグは付けない。
 
 ## 結果の読み方
@@ -37,8 +39,9 @@ description: Use when posting a sourced summary on aozora.app (pds.aozora.app) a
 | `status` | 意味 | 次にすること |
 |---|---|---|
 | `posted` | 送信され、`uri` と `cid` が返った | その JSON を報告する。投稿の証拠はこれだけ |
+| `queued` | 人の承認待ちで積まれた。送っていない。`id` と `reasons` がある | 「承認待ち（id）」と報告する。投稿したと書かない |
 | `dry-run` | 送っていない（資格情報が未設定、または `--execute` なし） | 「未投稿」と報告する |
-| `refused` | ガードが拒否した。`reasons` に理由 | 下の表を見る |
+| `refused` | ガードか審査が拒否した。`reasons` に理由 | 下の表を見る |
 | `send-failed` | 送信に失敗した。記録もされていない | 「未投稿」と報告する。同じ実行で再試行しない |
 
 ## 拒否されたとき
@@ -50,6 +53,7 @@ description: Use when posting a sourced summary on aozora.app (pds.aozora.app) a
 | `source-not-allowed:…` `link-not-allowed:…` | 一次資料の URL に替えられるときだけ。替えられなければやめる |
 | `banned:…` | **直さない**。言い換えて通すのは規則の回避。その項目は投稿しない |
 | `daily-limit` `too-soon` `duplicate-text` `source-posted-recently` | 直さない。今回は投稿しない |
+| `disclaimer-required` | よい。本文に注記「日本では大麻の所持・使用は違法です。医療の判断は医師に相談してください。」を入れる |
 
 ## 確認していないこと
 

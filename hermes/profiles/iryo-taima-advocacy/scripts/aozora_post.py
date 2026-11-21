@@ -1,21 +1,28 @@
-"""Post one guarded draft to the Aozora PDS (AT Protocol).
+"""Review, then post one draft to the Aozora PDS (AT Protocol).
 
-  python3 aozora_post.py --draft draft.json --state state.json            # dry run
-  python3 aozora_post.py --draft draft.json --state state.json --execute  # send
+  python3 aozora_post.py --draft draft.json --state state.json [--execute]
+  python3 aozora_post.py --send-approved ID --state state.json [--execute]
 
 draft.json: {"text": "...", "sources": ["https://..."]}
 
-A draft is sent only when post_guard.check passes AND --execute is given AND
-both AOZORA_IDENTIFIER and AOZORA_APP_PASSWORD are set in the environment.
-Anything else is a dry run: the record is printed and no request is made.
-The state file keeps the post history the guard reads (rate limit, dedupe).
+Every draft goes through two gates, in order:
+  1. post_guard.check: hard refusals (no primary source, banned content,
+     rate limits). A refused draft is never queued.
+  2. review.assess (Legal's pre-post review, AWAI-3655 policy A): a draft that
+     needs a human is queued under --review-dir and NOT sent. During the first
+     4 weeks of posting that is every draft. An approver approves it with
+     review_queue.py; then `--send-approved ID` sends it (post_guard runs again
+     at send time).
+A draft is sent only when both gates pass AND --execute is given AND both
+AOZORA_IDENTIFIER and AOZORA_APP_PASSWORD are set. Anything else is a dry run.
+Every decision is appended to <review-dir>/log.jsonl.
 
-Exit codes: 0 sent or dry run, 1 refused by the guard, 2 send failed.
+Exit codes: 0 sent, queued or dry run; 1 refused; 2 send failed.
 
-Not verified against the live PDS: the createSession call uses the standard
-AT Protocol identifier/password form. If pds.aozora.app accepts only its
-CACAO session form for this account, the send fails with exit 2 and nothing
-is recorded as posted.
+Known not to work yet: pds.aozora.app refuses identifier/password
+createSession (LegacyLoginDisabled, checked 2026-11-22); bots must present an
+Authn Biscuit (AWAI-3658). Until that lands every real send fails with exit 2
+and nothing is recorded as posted.
 """
 import argparse
 import json
@@ -25,6 +32,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 import post_guard
+import review
+from review_store import ReviewError, Store
 
 DEFAULT_PDS = "https://pds.aozora.app"
 COLLECTION = "app.bsky.feed.post"
@@ -71,12 +80,14 @@ def http_post_json(url, body, headers):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def run(draft, state, now, execute, env, pds=DEFAULT_PDS, http=http_post_json):
-    """Return (exit_code, result dict). Mutates `state` only after a send."""
-    verdict = post_guard.check(draft, history_of(state), now)
-    if not verdict["ok"]:
-        return 1, {"status": "refused", "reasons": verdict["reasons"]}
+def first_post_at(state):
+    times = [datetime.fromisoformat(p["at"]) for p in state.get("posts", [])]
+    return min(times) if times else None
 
+
+def send(draft, state, now, execute, env, pds=DEFAULT_PDS, http=http_post_json):
+    """Send a draft both gates passed. Returns (exit_code, result).
+    Mutates `state` only after a send."""
     record = build_record(draft["text"], now)
     identifier = env.get("AOZORA_IDENTIFIER")
     password = env.get("AOZORA_APP_PASSWORD")
@@ -100,19 +111,79 @@ def run(draft, state, now, execute, env, pds=DEFAULT_PDS, http=http_post_json):
     return 0, {"status": "posted", "uri": uri, "cid": created.get("cid")}
 
 
+def _log(store, now, result, extra=None):
+    event = {"event": "result", "at": now.isoformat(), "status": result["status"]}
+    for k in ("reasons", "why", "uri", "cid", "error", "id"):
+        if k in result:
+            event[k] = result[k]
+    event.update(extra or {})
+    store.log(event)
+
+
+def run(draft, state, now, execute, env, store, pds=DEFAULT_PDS, http=http_post_json):
+    """Review a new draft, then queue it or send it. Returns (exit_code, result)."""
+    verdict = post_guard.check(draft, history_of(state), now)
+    if not verdict["ok"]:
+        result = {"status": "refused", "reasons": verdict["reasons"]}
+        _log(store, now, result, {"text": draft.get("text") if isinstance(draft, dict) else None})
+        return 1, result
+
+    assessed = review.assess(draft, now, first_post_at(state))
+    if assessed["decision"] == "fix":
+        result = {"status": "refused", "reasons": assessed["reasons"]}
+        _log(store, now, result, {"text": draft["text"]})
+        return 1, result
+    if assessed["decision"] == "hold":
+        item = store.enqueue(draft, assessed["reasons"], now)
+        return 0, {"status": "queued", "id": item["id"], "reasons": assessed["reasons"]}
+
+    code, result = send(draft, state, now, execute, env, pds, http)
+    _log(store, now, result, {"text": draft["text"], "review": "no approval needed"})
+    return code, result
+
+
+def send_approved(item_id, state, now, execute, env, store, pds=DEFAULT_PDS, http=http_post_json):
+    """Send a queued draft an approver approved. Returns (exit_code, result)."""
+    try:
+        item = store.get(item_id)
+    except ReviewError as e:
+        return 1, {"status": "refused", "reasons": [str(e)]}
+    if item["status"] != "approved":
+        return 1, {"status": "refused", "reasons": ["not-approved:%s" % item["status"]]}
+    verdict = post_guard.check(item["draft"], history_of(state), now)
+    if not verdict["ok"]:
+        result = {"status": "refused", "reasons": verdict["reasons"], "id": item_id}
+        _log(store, now, result)
+        return 1, result
+    code, result = send(item["draft"], state, now, execute, env, pds, http)
+    if result["status"] == "posted":
+        store.mark_posted(item_id, result, now)
+    else:
+        _log(store, now, dict(result, id=item_id))
+    return code, result
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Post one guarded draft to the Aozora PDS.")
-    ap.add_argument("--draft", required=True)
+    ap = argparse.ArgumentParser(description="Review, then post one draft to the Aozora PDS.")
+    what = ap.add_mutually_exclusive_group(required=True)
+    what.add_argument("--draft")
+    what.add_argument("--send-approved", metavar="ID")
     ap.add_argument("--state", required=True)
+    ap.add_argument("--review-dir", default="workspace/review")
     ap.add_argument("--pds", default=DEFAULT_PDS)
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args(argv)
 
-    with open(args.draft, encoding="utf-8") as f:
-        draft = json.load(f)
     state = load_state(args.state)
-    code, result = run(draft, state, datetime.now(timezone.utc), args.execute,
-                       os.environ, args.pds)
+    store = Store(args.review_dir)
+    now = datetime.now(timezone.utc)
+    if args.draft:
+        with open(args.draft, encoding="utf-8") as f:
+            draft = json.load(f)
+        code, result = run(draft, state, now, args.execute, os.environ, store, args.pds)
+    else:
+        code, result = send_approved(args.send_approved, state, now, args.execute,
+                                     os.environ, store, args.pds)
     if result["status"] == "posted":
         tmp = args.state + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
