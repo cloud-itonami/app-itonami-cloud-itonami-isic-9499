@@ -1,3 +1,6 @@
 /.cpcache/
 /target/
 /out/
+# bot profile run state stays on the host
+/hermes/profiles/*/workspace/
+__pycache__/

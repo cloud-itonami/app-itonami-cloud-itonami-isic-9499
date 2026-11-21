@@ -1,0 +1,29 @@
+;; itonami profile (cloud.itonami.profile.v2) for the medical-cannabis advocacy bot
+;; (AWAI-3656). Inference uses the murakumo rail only. :capabilities is a copy of
+;; yakuwari.edn and grants nothing by itself.
+{:itonami/schema "cloud.itonami.profile.v2"
+ :profile/id "iryo-taima-advocacy"
+ :profile/description "Medical-cannabis advocacy bot: watches public law, council and public-comment sources and posts sourced summaries on aozora.app"
+ :profile/hermes-compatible true
+ :agent/kind :worker
+ :runtime {:engine :itonami-agent :scheduler :itonami}
+ :placement {:mode :local :inference-rail :murakumo}
+ :inference {:rails [:murakumo] :authorities ["api.murakumo.cloud"] :deny-hosts ["openrouter.ai"]}
+ :state {:workspace :host-local :results :cid-receipts :secrets :never-leave-host}
+ :ids {:repo "cloud-itonami/cloud-itonami-isic-9499"}
+ :authority {:default-decision :blocked :source :yakuwari :ref "yakuwari.edn"}
+ :capabilities
+ [{:capability :read_public_sources :decision :autonomous}
+  {:capability :draft_post :decision :autonomous}
+  {:capability :post_aozora :decision :autonomous}
+  {:capability :reply_aozora :decision :blocked}
+  {:capability :publish_organization_position :decision :approval-required}
+  {:capability :post_other_networks :decision :blocked}
+  {:capability :create_account :decision :blocked}
+  {:capability :use_signing_identity :decision :blocked}
+  {:capability :export_private_keys :decision :blocked}
+  {:capability :modify_source :decision :blocked}
+  {:capability :handle_personal_health_data :decision :blocked}]
+ :org/world :host
+ :invocation :resident
+ :cron? true}
