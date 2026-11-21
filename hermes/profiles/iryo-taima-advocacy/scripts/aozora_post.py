@@ -17,24 +17,28 @@ Every draft goes through two gates, in order:
      send, not queuing.
 Real sending needs "posting_enabled": true in review_config.json (off until
 the owner turns it on).
-A draft is sent only when both gates pass AND --execute is given AND both
-AOZORA_IDENTIFIER and AOZORA_APP_PASSWORD are set. Anything else is a dry run.
-Every decision is appended to <review-dir>/log.jsonl.
+A draft is sent only when both gates pass AND --execute is given AND the
+bot's did:key seed is in the Keychain (aozora_identity.py). Anything else is a
+dry run. Every decision is appended to <review-dir>/log.jsonl.
+
+Sending (docs/agent-identity.md §8, network-awai/app-kotoba-cloud): for every
+post, fetch a nonce, prove the did:key and take a fresh 15-minute Biscuit with
+repo:post only (aozora_identity.biscuit_for_post), then createRecord on the
+bot's own repo with the `bot` self-label. The Biscuit is used once and never
+saved. The bot never replies: a record never carries `reply` (the PDS also
+refuses bot replies, agent_reply_not_permitted).
 
 Exit codes: 0 sent, queued or dry run; 1 refused; 2 send failed.
-
-Known not to work yet: pds.aozora.app refuses identifier/password
-createSession (LegacyLoginDisabled, checked 2026-11-22); bots must present an
-Authn Biscuit (AWAI-3658). Until that lands every real send fails with exit 2
-and nothing is recorded as posted.
 """
 import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+import aozora_identity
 import post_guard
 import review
 from review_store import ReviewError, Store, load_config, posting_enabled
@@ -46,6 +50,9 @@ DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "revie
 
 DEFAULT_PDS = "https://pds.aozora.app"
 COLLECTION = "app.bsky.feed.post"
+BOT_LABELS = {"$type": "com.atproto.label.defs#selfLabels", "values": [{"val": "bot"}]}
+# Fresh Biscuit per post; tests replace this.
+IDENTITY = aozora_identity.biscuit_for_post
 
 
 def load_state(path):
@@ -73,7 +80,7 @@ def link_facets(text):
 
 
 def build_record(text, now):
-    record = {"$type": COLLECTION, "text": text, "langs": ["ja"],
+    record = {"$type": COLLECTION, "text": text, "langs": ["ja"], "labels": BOT_LABELS,
               "createdAt": now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")}
     facets = link_facets(text)
     if facets:
@@ -89,6 +96,20 @@ def http_post_json(url, body, headers):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _http_failure(e):
+    """status and error code of a failed PDS call; nothing else of the body."""
+    out = {"status": "send-failed", "step": "createRecord", "error": type(e).__name__}
+    if isinstance(e, urllib.error.HTTPError):
+        out["http_status"] = e.code
+        try:
+            code = json.loads(e.read().decode("utf-8")).get("error")
+            if isinstance(code, str) and aozora_identity.CODE_RE.match('"error":"%s"' % code):
+                out["code"] = code
+        except Exception:
+            pass
+    return out
+
+
 def first_post_at(state):
     times = [datetime.fromisoformat(p["at"]) for p in state.get("posts", [])]
     return min(times) if times else None
@@ -96,25 +117,34 @@ def first_post_at(state):
 
 def send(draft, state, now, execute, env, pds=DEFAULT_PDS, http=http_post_json, enabled=True):
     """Send a draft both gates passed. Returns (exit_code, result).
-    Mutates `state` only after a send. `enabled` is the owner's posting switch."""
+    Mutates `state` only after a send. `enabled` is the owner's posting switch.
+    Neither the Keychain nor the network is touched unless execute and
+    enabled are both true."""
     record = build_record(draft["text"], now)
-    identifier = env.get("AOZORA_IDENTIFIER")
-    password = env.get("AOZORA_APP_PASSWORD")
-    if not (execute and enabled and identifier and password):
-        why = ("no --execute" if not execute else
-               "posting disabled (review_config.json posting_enabled)" if not enabled else
-               "credentials not set")
+    assert "reply" not in record  # never reply
+    if not (execute and enabled):
+        why = "no --execute" if not execute else \
+            "posting disabled (review_config.json posting_enabled)"
         return 0, {"status": "dry-run", "why": why, "record": record}
 
     try:
-        session = http(pds + "/xrpc/com.atproto.server.createSession",
-                       {"identifier": identifier, "password": password}, {})
+        auth = IDENTITY(env)
+    except aozora_identity.NotConfigured as e:
+        return 0, {"status": "dry-run", "why": "identity not set (%s)" % e, "record": record}
+    except aozora_identity.IdentityError as e:
+        return 2, {"status": "send-failed", "step": e.step, "http_status": e.status,
+                   "code": e.code, "error": "IdentityError"}
+    except Exception as e:
+        return 2, {"status": "send-failed", "step": "biscuit", "error": type(e).__name__}
+    try:
         created = http(pds + "/xrpc/com.atproto.repo.createRecord",
-                       {"repo": session["did"], "collection": COLLECTION, "record": record},
-                       {"Authorization": "Bearer " + session["accessJwt"]})
+                       {"repo": auth["did"], "collection": COLLECTION, "record": record},
+                       {"Authorization": "Bearer " + auth["token"]})
         uri = created["uri"]
-    except Exception as e:  # the response body may hold account detail: keep the class only
-        return 2, {"status": "send-failed", "error": type(e).__name__}
+    except Exception as e:  # the response body may hold detail: keep status and code only
+        return 2, _http_failure(e)
+    finally:
+        auth = None
 
     state.setdefault("posts", []).append({
         "at": now.isoformat(), "hash": post_guard.text_hash(draft["text"]),
@@ -124,7 +154,7 @@ def send(draft, state, now, execute, env, pds=DEFAULT_PDS, http=http_post_json, 
 
 def _log(store, now, result, extra=None):
     event = {"event": "result", "at": now.isoformat(), "status": result["status"]}
-    for k in ("reasons", "why", "uri", "cid", "error", "id"):
+    for k in ("reasons", "why", "uri", "cid", "error", "id", "step", "http_status", "code"):
         if k in result:
             event[k] = result[k]
     event.update(extra or {})

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
+import aozora_identity
 import aozora_post
 import review
 import review_queue
@@ -16,7 +17,19 @@ NOW = datetime(2026, 11, 22, 3, 0, tzinfo=timezone.utc)
 SRC = "https://www.mhlw.go.jp/content/11120000/001302699.pdf"
 DOI = "https://doi.org/10.1056/NEJMoa1611618"
 SRC2 = "https://public-comment.e-gov.go.jp/servlet/Public?CLASSNAME=PCMMSTDETAIL&id=495240000"
-CREDS = {"AOZORA_IDENTIFIER": "bot.example", "AOZORA_APP_PASSWORD": "test-value"}
+CREDS = {"AOZORA_AGENT_SEED_B64URL": "test-seed"}
+BOT = "did:key:z6MkTestBot"
+
+
+def fake_identity(env):
+    """Stands in for the real Biscuit step (aozora_identity.biscuit_for_post):
+    no Keychain, no network."""
+    if not env.get("AOZORA_AGENT_SEED_B64URL"):
+        raise aozora_identity.NotConfigured("no Keychain item")
+    return {"token": "biscuit-token", "did": BOT, "expiresAt": "2099-01-01T00:00:00Z"}
+
+
+aozora_post.IDENTITY = fake_identity
 PLAIN = {"text": "大麻草の栽培の規制に関する省令の施行通知が公開されました。 " + SRC, "sources": [SRC]}
 
 
@@ -34,9 +47,7 @@ class FakePds:
 
     def __call__(self, url, body, headers):
         self.calls.append(url)
-        if url.endswith("createSession"):
-            return {"did": "did:web:pds.example:bot", "accessJwt": "jwt"}
-        return {"uri": "at://did:web:pds.example:bot/app.bsky.feed.post/9", "cid": "bafy9"}
+        return {"uri": "at://did:key:z6MkTestBot/app.bsky.feed.post/9", "cid": "bafy9"}
 
 
 class Holds(unittest.TestCase):

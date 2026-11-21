@@ -8,14 +8,16 @@
    :note "public government, legislature, regulator and peer-reviewed sources only"}
   {:capability :draft_post :decision :autonomous}
   {:capability :post_aozora :decision :autonomous
-   :note "only through scripts/aozora_post.py, which refuses any draft post_guard.py rejects and queues for a human approver any draft review.py holds (Legal policy A, AWAI-3655)"}
+   :note "only through scripts/aozora_post.py, which refuses any draft post_guard.py rejects and queues for a human approver any draft review.py holds (Legal policy A, AWAI-3655); each send proves the bot's did:key and takes a fresh 15-minute repo:post Biscuit inside scripts/aozora_identity.py (AWAI-3809)"}
   {:capability :reply_aozora :decision :blocked
    :note "no replies or direct messages: an individual question may be a medical or legal consultation"}
   {:capability :publish_organization_position :decision :approval-required
    :note "an official position of the operating organization stays human-gated (memberorg :actuation/publish-position)"}
   {:capability :post_other_networks :decision :blocked}
-  {:capability :create_account :decision :blocked}
-  {:capability :use_signing_identity :decision :blocked}
+  {:capability :create_account :decision :blocked
+   :note "the Aozora account (create-account, put-profile) is set up once by a human operator, not by the agent"}
+  {:capability :use_signing_identity :decision :blocked
+   :note "the agent never reads or uses the did:key seed (macOS Keychain only); only the post_aozora send step does"}
   {:capability :export_private_keys :decision :blocked}
   {:capability :modify_source :decision :blocked}
   {:capability :handle_personal_health_data :decision :blocked}]
