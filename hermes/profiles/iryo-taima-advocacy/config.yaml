@@ -1,0 +1,10 @@
+# iryo-taima-advocacy (AWAI-3658). The model entry names the Murakumo rail so the itonami rail
+# gate can resolve it. Host-local blocks (secrets, command_allowlist, terminal) stay on the host.
+model:
+  provider: murakumo
+  default: mishima
+  base_url: https://api.murakumo.cloud/v1
+  context_length: 131072
+  max_tokens: 8192
+agent:
+  max_turns: 40
