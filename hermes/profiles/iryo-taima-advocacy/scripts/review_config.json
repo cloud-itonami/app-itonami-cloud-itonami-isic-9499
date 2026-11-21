@@ -4,6 +4,7 @@
   ],
   "posting_enabled": false,
   "daily_budget_usd": 1.0,
-  "usd_per_turn": null,
-  "_note": "AWAI-3658. approvers: names accepted by `queue approve/reject --by`; the owner approves during the first 4 weeks (Decision 2026-11-22), ITONAMI_REVIEW_APPROVERS overrides. posting_enabled: real sends stay off until the owner turns this on (go-live conditions in AWAI-3658). daily_budget_usd / usd_per_turn: the murakumo budget tick.py applies; usd_per_turn is null because murakumo publishes no price for mishima, so the budget cannot be applied until someone sets it (turns and tokens are recorded in workspace/review/tick-status.json)."
+  "usd_per_turn": 0.25,
+  "max_murakumo_turns_per_day": 4,
+  "_note": "AWAI-3658. approvers: names accepted by `queue approve/reject --by`; the owner approves during the first 4 weeks (Decision 2026-11-22), ITONAMI_REVIEW_APPROVERS overrides. posting_enabled: real sends stay off until the owner turns this on. Budget (Decision 2026-11-22): at most max_murakumo_turns_per_day murakumo turns per JST day, in-run retries included; usd_per_turn 0.25 is a placeholder until the real price is known (4 turns = 1 USD/day); recompute after about 28 successful turns from tokens_per_successful_turn in workspace/review/tick-status.json."
 }

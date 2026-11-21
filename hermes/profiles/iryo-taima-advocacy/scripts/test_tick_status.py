@@ -63,9 +63,15 @@ class Status(unittest.TestCase):
         self.assertEqual((1, 2), (s["exit_code"], s["consecutive_failures"]))
         self.assertEqual(("provider_error", E503, 3),
                          tuple(s["last_error"][k] for k in ("exit_reason", "error", "attempts")))
-        self.assertEqual((3, 3, 6, 900), (s["runs_today"], s["murakumo_turns_today"],
-                                           s["murakumo_requests_today"], s["tokens_today"]))
+        # 3 agent turns + 6 failed murakumo attempts (retries count): 9 turns today
+        self.assertEqual((3, 9, 3, 6, 900),
+                         (s["runs_today"], s["murakumo_turns_today"], s["agent_turns_today"],
+                          s["murakumo_failed_requests_today"], s["tokens_today"]))
         self.assertIsNone(s["est_cost_usd_today"])
+        # successful runs over all days: yesterday 4 turns / 50 tokens, today 3 / 900
+        self.assertEqual((2, 7, 950, 135.7),
+                         (s["successful_runs_total"], s["successful_turns_total"],
+                          s["tokens_total_successful"], s["tokens_per_successful_turn"]))
 
     def test_success_resets_failures_and_exit_code_can_be_given(self):
         self.write_runs([run("2026-11-22T06:23:00+09:00", "error", attempts=3),
@@ -73,29 +79,59 @@ class Status(unittest.TestCase):
         s = tick_status.compute(self.profile, NOW, {}, exit_code=0)
         self.assertEqual((0, 0, None), (s["exit_code"], s["consecutive_failures"], s["last_error"]))
 
-    def test_known_cost_and_budget(self):
+    def test_decision_budget_four_turns_a_day(self):
+        config = {"usd_per_turn": 0.25, "daily_budget_usd": 1.0, "max_murakumo_turns_per_day": 4}
+        self.write_runs([run("2026-11-22T00:23:00+09:00", "ok", turns=3)])
+        s = tick_status.compute(self.profile, NOW, config)
+        self.assertEqual((3, 0.75), (s["murakumo_turns_today"], s["est_cost_usd_today"]))
+        self.assertEqual(True, tick_status.budget_allows_turn(s, config)[0])  # 0.75 + 0.25 = 1.0
         self.write_runs([run("2026-11-22T00:23:00+09:00", "ok", turns=4)])
-        config = {"usd_per_turn": 0.2, "daily_budget_usd": 1.0}
+        allowed, why = tick_status.budget_allows_turn(tick_status.compute(self.profile, NOW, config),
+                                                      config)
+        self.assertEqual(False, allowed)
+        self.assertIn("turn cap", why)
+
+    def test_in_run_retries_count_toward_the_cap(self):
+        config = {"usd_per_turn": 0.25, "max_murakumo_turns_per_day": 4}
+        self.write_runs([run("2026-11-22T00:23:00+09:00", "error", attempts=3),
+                         run("2026-11-22T06:23:00+09:00", "ok", turns=1)])
         s = tick_status.compute(self.profile, NOW, config)
-        self.assertEqual(0.8, s["est_cost_usd_today"])
-        self.assertEqual(True, tick_status.budget_allows_turn(s, config)[0])  # 0.8 + 0.2 = 1.0
-        config["usd_per_turn"] = 0.25
+        self.assertEqual((4, 1.0), (s["murakumo_turns_today"], s["est_cost_usd_today"]))
+        self.assertFalse(tick_status.budget_allows_turn(s, config)[0])
+
+    def test_cap_resets_on_the_next_jst_day(self):
+        config = {"usd_per_turn": 0.25, "max_murakumo_turns_per_day": 4}
+        self.write_runs([run("2026-11-21T18:23:00+09:00", "error", attempts=3),
+                         run("2026-11-21T23:30:00+09:00", "error", attempts=3)])
         s = tick_status.compute(self.profile, NOW, config)
-        allowed, why = tick_status.budget_allows_turn(s, config)
+        self.assertEqual(0, s["murakumo_turns_today"])
+        self.assertTrue(tick_status.budget_allows_turn(s, config)[0])
+
+    def test_cost_cap_applies_below_the_turn_cap(self):
+        config = {"usd_per_turn": 0.5, "daily_budget_usd": 1.0, "max_murakumo_turns_per_day": 10}
+        self.write_runs([run("2026-11-22T00:23:00+09:00", "ok", turns=2)])
+        allowed, why = tick_status.budget_allows_turn(tick_status.compute(self.profile, NOW, config),
+                                                      config)
         self.assertEqual(False, allowed)
         self.assertIn("exceed 1.00", why)
 
-    def test_unknown_cost_allows_and_says_so(self):
+    def test_unknown_cost_still_applies_the_turn_cap(self):
         allowed, why = tick_status.budget_allows_turn(tick_status.compute(self.profile, NOW, {}), {})
-        self.assertEqual(True, allowed)
-        self.assertIn("cost unknown", why)
+        self.assertEqual((True, "within the turn cap; cost unknown"), (allowed, why))
+
+    def test_shipped_config_is_the_decision(self):
+        with open(tick_status.CONFIG, encoding="utf-8") as f:
+            config = json.load(f)
+        self.assertEqual((0.25, 4, 1.0, False),
+                         (config["usd_per_turn"], config["max_murakumo_turns_per_day"],
+                          config["daily_budget_usd"], config["posting_enabled"]))
 
     def test_budget_skip_does_not_run_the_watcher(self):
         self.write_runs([run("2026-11-22T00:23:00+09:00", "ok", turns=10)])
         self.set_config(usd_per_turn=0.5, daily_budget_usd=1.0)
         with mock.patch.object(tick.aozora_post, "DEFAULT_CONFIG", self.config):
             reason = tick.budget_step(NOW, self.profile, self.config)
-        self.assertIn("daily budget", reason)
+        self.assertIn("turn cap", reason)
         s = tick_status.read(self.profile)
         self.assertEqual(reason, s["agent_skipped_today"]["reason"])
         with open(os.path.join(self.profile, "workspace", "review", "log.jsonl")) as f:
