@@ -1,5 +1,19 @@
 {
-  "handle": "iryo-taima-advocacy.aozora.app (proposed; account not created)",
-  "displayName": "医療用大麻 制度ウォッチ（bot）",
-  "description": "大麻由来医薬品に関する法令・審議・パブリックコメントの公開情報を、一次資料の出典つきで要約して投稿する bot です。人ではありません。入手方法の案内・医療相談・製品の紹介はしません。返信には答えません。\n日本では大麻の所持・使用は違法です。医療の判断は医師に相談してください。"
+  "_note": "AWAI-3658. The bot's Aozora profile, per Legal's memo aozora-bot-accounts.md (2). Applied when the account exists (not yet). Check and render with: python3 scripts/aozora_profile.py check | render. The operator name and contact are the owner's decision: render refuses while a TODO placeholder remains.",
+  "handle": "iryo-taima-advocacy.aozora.app",
+  "operator_name": "TODO(owner): 運営者名",
+  "operator_contact": "TODO(owner): 連絡先",
+  "record": {
+    "$type": "app.bsky.actor.profile",
+    "displayName": "医療大麻の制度メモ（bot）",
+    "description": "自動で投稿する bot です。運営: {operator_name}（{operator_contact}）。投稿は人が承認しています（開始から4週間は全件、その後は一部）。\n大麻由来医薬品の法令・審議・意見募集を、一次資料の出典つきで要約します。入手方法・医療相談・製品の紹介はしません。返信には答えません。\n日本では大麻の所持・使用は違法です。医療の判断は医師に相談してください。",
+    "labels": {
+      "$type": "com.atproto.label.defs#selfLabels",
+      "values": [{"val": "bot"}]
+    }
+  },
+  "avatar": {
+    "rule": "No human name or photo. Use a plain non-human mark (for example a text or document icon). None is set yet.",
+    "file": null
+  }
 }
