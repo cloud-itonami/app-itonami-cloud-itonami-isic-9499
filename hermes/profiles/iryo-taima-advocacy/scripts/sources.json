@@ -1,0 +1,8 @@
+{
+  "checked": "2026-11-21: each URL returned HTTP 200 with an RSS 1.0 document",
+  "feeds": [
+    {"name": "e-Gov パブリックコメント", "url": "https://public-comment.e-gov.go.jp/rss/pcm_list.xml"},
+    {"name": "厚生労働省 新着情報", "url": "https://www.mhlw.go.jp/stf/news.rdf"},
+    {"name": "PMDA 新着情報", "url": "https://www.pmda.go.jp/rss_015.xml"}
+  ]
+}
