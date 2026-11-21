@@ -8,7 +8,7 @@
    :note "public government, legislature, regulator and peer-reviewed sources only"}
   {:capability :draft_post :decision :autonomous}
   {:capability :post_aozora :decision :autonomous
-   :note "only through scripts/aozora_post.py, which refuses any draft post_guard.py rejects"}
+   :note "only through scripts/aozora_post.py, which refuses any draft post_guard.py rejects and queues for a human approver any draft review.py holds (Legal policy A, AWAI-3655)"}
   {:capability :reply_aozora :decision :blocked
    :note "no replies or direct messages: an individual question may be a medical or legal consultation"}
   {:capability :publish_organization_position :decision :approval-required

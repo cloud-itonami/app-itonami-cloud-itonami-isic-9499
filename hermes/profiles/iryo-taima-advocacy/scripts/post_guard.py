@@ -38,6 +38,19 @@ ALLOWED_SOURCE_HOSTS = (
     "fda.gov",
     "pubmed.ncbi.nlm.nih.gov",
     "cochranelibrary.com",
+    # DOI resolver (a paper's DOI link) and foreign government health
+    # regulators, for overseas systems and research (Legal memo, AWAI-3655).
+    "doi.org",
+    "nih.gov",
+    "cdc.gov",
+    "gov.uk",
+    "canada.ca",
+    "europa.eu",
+    "tga.gov.au",
+    "health.gov.au",
+    "bfarm.de",
+    "ansm.sante.fr",
+    "health.gov.il",
 )
 
 # (reason, pattern). Japanese and English forms of each refusal class.

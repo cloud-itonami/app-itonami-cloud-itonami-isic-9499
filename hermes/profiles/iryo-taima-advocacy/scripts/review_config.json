@@ -1,0 +1,4 @@
+{
+  "approvers": [],
+  "_note": "Names allowed to approve queued posts (AWAI-3658). Empty until the owner names them; ITONAMI_REVIEW_APPROVERS (comma-separated) overrides this list."
+}
