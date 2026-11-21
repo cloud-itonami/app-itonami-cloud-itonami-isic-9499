@@ -6,8 +6,9 @@
    Aozora credentials in the environment; otherwise the attempt is a dry run
    and the draft stays approved for the next tick.
 2. Refresh workspace/review/tick-status.json (tick_status.py) and apply the
-   daily murakumo budget (review_config.json daily_budget_usd, default 1 USD,
-   with usd_per_turn). When the next turn would exceed it, the watcher does
+   daily murakumo budget: at most max_murakumo_turns_per_day turns per JST day
+   (4; in-run retries count), and daily_budget_usd (1 USD) at usd_per_turn
+   (0.25, a placeholder). When the cap is reached, the watcher does
    not run (so no item is used up) and the agent turn is skipped with
    {"wakeAgent": false}; the reason is recorded in the status file and the
    review log. With no known per-turn cost the budget cannot be applied and

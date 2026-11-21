@@ -5,9 +5,18 @@ Writes workspace/review/tick-status.json from the host's own run records
 
   {"updated_at", "job_id", "last_run", "last_status", "exit_code",
    "consecutive_failures", "last_error", "day", "runs_today",
-   "murakumo_turns_today", "murakumo_requests_today", "tokens_today",
-   "est_cost_usd_today", "cost_basis", "daily_budget_usd",
-   "agent_skipped_today", "posting_enabled"}
+   "murakumo_turns_today", "agent_turns_today", "murakumo_failed_requests_today",
+   "max_murakumo_turns_per_day", "tokens_today", "est_cost_usd_today",
+   "cost_basis", "daily_budget_usd", "agent_skipped_today",
+   "successful_runs_total", "successful_turns_total", "tokens_total_successful",
+   "tokens_per_successful_turn", "posting_enabled"}
+
+Counting (Decision 2026-11-22): a murakumo turn is every model request the
+run made, in-run retries included: the agent's completed turns plus every
+failed murakumo attempt. The day is JST. At most max_murakumo_turns_per_day
+(4) per day; usd_per_turn is 0.25 until the real price is known, so 4 turns
+= 1 USD/day. Tokens per successful turn are kept so the price can be
+recomputed after about 28 successful turns.
 
 Run after each tick (the scheduled task does), optionally with the launcher's
 exit code:  python3 scripts/tick_status.py [--exit-code N]
@@ -15,9 +24,9 @@ scripts/tick.py also refreshes it before deciding whether today's budget
 allows an agent turn.
 
 Cost: murakumo publishes no price for the mishima fleet (checked 2026-11-22:
-/v1/models carries no price field), so est_cost_usd_today is null and
-cost_basis says so, unless review_config.json sets "usd_per_turn". Turns,
-requests and tokens are always recorded.
+/v1/models carries no price field). usd_per_turn in review_config.json is a
+placeholder (0.25) until it is known; with it unset, est_cost_usd_today is
+null and only the turn cap applies.
 """
 import argparse
 import json
@@ -35,6 +44,7 @@ JOB_ID = "1a7a0ad0c4c1"
 JST = timezone(timedelta(hours=9))
 FAILED = ("error", "delivery_failed")
 DEFAULT_BUDGET_USD = 1.0
+DEFAULT_MAX_TURNS = 4
 CONFIG = os.path.join(HERE, "review_config.json")
 
 
@@ -68,6 +78,11 @@ def _error(row):
             "attempts": len(row.get("attempts") or []), "at": row.get("ts")}
 
 
+def max_turns(config):
+    v = config.get("max_murakumo_turns_per_day", DEFAULT_MAX_TURNS)
+    return int(v) if isinstance(v, int) and v >= 0 else DEFAULT_MAX_TURNS
+
+
 def usd_per_turn(config):
     v = config.get("usd_per_turn")
     return float(v) if isinstance(v, (int, float)) and v >= 0 else None
@@ -88,10 +103,15 @@ def compute(profile, now, config, exit_code=None):
         else:
             break
     last = runs[-1] if runs else None
-    turns = sum(int(r.get("turns") or 0) for r in today(runs))
-    requests = sum(1 for r in today(runs) for a in r.get("attempts") or []
-                   if a.get("provider") == "murakumo")
+    agent_turns = sum(int(r.get("turns") or 0) for r in today(runs))
+    failed = sum(1 for r in today(runs) for a in r.get("attempts") or []
+                 if a.get("provider") == "murakumo")
+    turns = agent_turns + failed
     tokens = sum(int(u.get("total_tokens") or 0) for u in today(usage))
+    ok_runs = [r for r in runs if r.get("status") not in FAILED and int(r.get("turns") or 0) > 0]
+    ok_turns = sum(int(r["turns"]) for r in ok_runs)
+    ok_ts = {r.get("ts") for r in ok_runs}
+    ok_tokens = sum(int(u.get("total_tokens") or 0) for u in usage if u.get("ts") in ok_ts)
     per_turn = usd_per_turn(config)
     previous = read(profile) or {}
     skipped = previous.get("agent_skipped_today") if previous.get("day") == day.isoformat() else None
@@ -110,25 +130,36 @@ def compute(profile, now, config, exit_code=None):
         "last_error": _error(last) if last else None,
         "day": day.isoformat(), "runs_today": len(today(runs)),
         "murakumo_turns_today": turns,
-        "murakumo_requests_today": requests,
+        "agent_turns_today": agent_turns,
+        "murakumo_failed_requests_today": failed,
+        "max_murakumo_turns_per_day": max_turns(config),
         "tokens_today": tokens,
         "est_cost_usd_today": round(turns * per_turn, 4) if per_turn is not None else None,
         "cost_basis": ("usd_per_turn=%s from review_config.json" % per_turn if per_turn is not None
                        else "unknown: murakumo publishes no price for mishima; turns and tokens recorded"),
         "daily_budget_usd": config.get("daily_budget_usd", DEFAULT_BUDGET_USD),
         "agent_skipped_today": skipped,
+        "successful_runs_total": len(ok_runs),
+        "successful_turns_total": ok_turns,
+        "tokens_total_successful": ok_tokens,
+        "tokens_per_successful_turn": round(ok_tokens / ok_turns, 1) if ok_turns else None,
         "posting_enabled": posting_enabled(config),
     }
 
 
 def budget_allows_turn(status, config):
-    """(allowed, reason). With a known per-turn cost, refuse a turn that would
-    take today's estimate over the budget. With no known cost the budget cannot
-    be applied: allowed, and the reason says so."""
+    """(allowed, reason). Refuse once today's murakumo turns (retries
+    included) reached the cap, or when one more turn would take the estimate
+    over the budget. A run already under way is not cut: one run can use more
+    than one turn, so a day may end a little over the cap."""
+    cap = max_turns(config)
+    if status["murakumo_turns_today"] >= cap:
+        return False, "turn cap: %d murakumo turns today (retries included), cap %d" % (
+            status["murakumo_turns_today"], cap)
     per_turn = usd_per_turn(config)
     budget = float(config.get("daily_budget_usd", DEFAULT_BUDGET_USD))
     if per_turn is None:
-        return True, "cost unknown; budget not applied (turns recorded)"
+        return True, "within the turn cap; cost unknown"
     projected = status["murakumo_turns_today"] * per_turn + per_turn
     if projected > budget:
         return False, "daily budget: %.4f + %.4f USD would exceed %.2f USD" % (
