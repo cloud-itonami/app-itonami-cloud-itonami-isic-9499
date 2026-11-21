@@ -29,6 +29,11 @@ def approvers(config, env):
     return [a for a in config.get("approvers", []) if isinstance(a, str) and a.strip()]
 
 
+def posting_enabled(config):
+    """Real sending is off unless the owner sets "posting_enabled": true."""
+    return config.get("posting_enabled") is True
+
+
 def load_config(path):
     if not path or not os.path.exists(path):
         return {}
@@ -86,7 +91,19 @@ class Store:
                     out.append(item)
         return sorted(out, key=lambda i: i["queued_at"])
 
+    def open_item_for(self, text):
+        """A pending or approved item with the same text, else None."""
+        for item in self.items():
+            if item["status"] in ("pending", "approved") and item["draft"]["text"] == text:
+                return item
+        return None
+
     def enqueue(self, draft, reasons, now):
+        """Queue `draft`; an identical pending or approved draft is returned
+        instead of a second copy (the watcher reports an item on several runs)."""
+        existing = self.open_item_for(draft["text"])
+        if existing:
+            return existing
         self._ensure()
         seed = json.dumps([draft, now.isoformat()], ensure_ascii=False, sort_keys=True)
         item_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]

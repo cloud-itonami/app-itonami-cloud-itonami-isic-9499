@@ -9,11 +9,13 @@ from datetime import datetime, timedelta, timezone
 import aozora_post
 import review
 import review_queue
+import tick
 from review_store import ReviewError, Store, approvers
 
 NOW = datetime(2026, 11, 22, 3, 0, tzinfo=timezone.utc)
 SRC = "https://www.mhlw.go.jp/content/11120000/001302699.pdf"
 DOI = "https://doi.org/10.1056/NEJMoa1611618"
+SRC2 = "https://public-comment.e-gov.go.jp/servlet/Public?CLASSNAME=PCMMSTDETAIL&id=495240000"
 CREDS = {"AOZORA_IDENTIFIER": "bot.example", "AOZORA_APP_PASSWORD": "test-value"}
 PLAIN = {"text": "大麻草の栽培の規制に関する省令の施行通知が公開されました。 " + SRC, "sources": [SRC]}
 
@@ -213,9 +215,124 @@ class Cli(unittest.TestCase):
         code, out = self.cli("approve", queued["id"], "--approver", "reviewer-a")
         self.assertEqual((0, "approved"), (code, json.loads(out)["status"]))
 
-    def test_shipped_config_has_no_approver(self):
+    def test_shipped_config_owner_approves_and_posting_is_off(self):
         with open(review_queue.DEFAULT_CONFIG, encoding="utf-8") as f:
-            self.assertEqual([], json.load(f)["approvers"])
+            config = json.load(f)
+        self.assertEqual(["owner"], config["approvers"])
+        self.assertIs(False, config["posting_enabled"])
+
+    def test_orca_bridge_surface(self):
+        store = Store(self.review)
+        _, a = aozora_post.run(PLAIN, {"posts": []}, NOW, True, CREDS, store, http=no_network)
+        other = {"text": "意見募集が始まりました。 " + SRC2, "sources": [SRC2]}
+        _, b = aozora_post.run(other, {"posts": []}, NOW, True, CREDS, store, http=no_network)
+        code, out = self.cli("list", "--pending", "--json")
+        listed = json.loads(out)
+        self.assertEqual(0, code)
+        self.assertEqual([a["id"], b["id"]], [i["id"] for i in listed])
+        self.assertEqual({"id", "status", "text", "sources", "reasons", "queued_at", "approver",
+                          "decided_at"}, set(listed[0]))
+        self.assertEqual((PLAIN["text"], [SRC], ["initial-period"]),
+                         (listed[0]["text"], listed[0]["sources"], listed[0]["reasons"]))
+        code, out = self.cli("approve", a["id"], "--by", "reviewer-a")
+        self.assertEqual(("approved", "reviewer-a", NOW.isoformat()),
+                         tuple(json.loads(out)[k] for k in ("status", "approver", "decided_at")))
+        code, out = self.cli("reject", b["id"], "--by", "reviewer-a", "--reason", "二次資料")
+        self.assertEqual(("rejected", "二次資料"),
+                         tuple(json.loads(out)[k] for k in ("status", "decision_note")))
+        self.assertEqual([], json.loads(self.cli("list", "--pending", "--json")[1]))
+        events = json.loads(self.cli("log", "--json")[1])
+        self.assertEqual(["queued", "queued", "approved", "rejected"], [e["event"] for e in events])
+
+    def test_reject_needs_a_reason(self):
+        _, a = aozora_post.run(PLAIN, {"posts": []}, NOW, True, CREDS, Store(self.review),
+                               http=no_network)
+        with self.assertRaises(SystemExit):
+            self.cli("reject", a["id"], "--by", "reviewer-a")
+
+    def test_queue_shim_runs_from_anywhere(self):
+        import subprocess
+        shim = os.path.join(os.path.dirname(os.path.abspath(review_queue.__file__)), "queue")
+        r = subprocess.run([shim, "--review-dir", self.review, "list", "--pending", "--json"],
+                           capture_output=True, text=True, cwd=self.dir, timeout=60)
+        self.assertEqual((0, []), (r.returncode, json.loads(r.stdout)))
+
+
+class Tick(unittest.TestCase):
+    def setUp(self):
+        self.profile = tempfile.mkdtemp()
+        self.store = Store(os.path.join(self.profile, "workspace", "review"))
+        self.on = os.path.join(self.profile, "on.json")
+        with open(self.on, "w", encoding="utf-8") as f:
+            json.dump({"posting_enabled": True}, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.profile)
+
+    def queue(self, draft):
+        _, r = aozora_post.run(draft, {"posts": []}, NOW, True, CREDS, self.store, http=no_network)
+        return r["id"]
+
+    def test_nothing_approved_sends_nothing(self):
+        self.queue(PLAIN)
+        self.assertIsNone(tick.send_step(NOW, CREDS, self.profile, self.on, http=no_network))
+
+    def test_approved_draft_is_sent_on_the_next_tick(self):
+        item = self.queue(PLAIN)
+        self.store.decide(item, True, "owner", ["owner"], NOW)
+        pds = FakePds()
+        result = tick.send_step(NOW, CREDS, self.profile, self.on, http=pds)
+        self.assertEqual("posted", result["status"])
+        self.assertEqual("posted", self.store.get(item)["status"])
+        with open(os.path.join(self.profile, "workspace", "post-state.json"), encoding="utf-8") as f:
+            self.assertEqual(result["uri"], json.load(f)["posts"][0]["uri"])
+        self.assertIsNone(tick.send_step(NOW, CREDS, self.profile, self.on, http=no_network))
+
+    def test_rejected_draft_is_never_sent(self):
+        item = self.queue(PLAIN)
+        self.store.decide(item, False, "owner", ["owner"], NOW, "no")
+        self.assertIsNone(tick.send_step(NOW, CREDS, self.profile, self.on, http=no_network))
+
+    def test_posting_switch_off_is_a_dry_run_and_keeps_the_approval(self):
+        item = self.queue(PLAIN)
+        self.store.decide(item, True, "owner", ["owner"], NOW)
+        result = tick.send_step(NOW, CREDS, self.profile, review_queue.DEFAULT_CONFIG,
+                                http=no_network)
+        self.assertEqual("dry-run", result["status"])
+        self.assertIn("posting disabled", result["why"])
+        self.assertNotIn("record", result)
+        self.assertEqual("approved", self.store.get(item)["status"])
+
+
+class QueueRules(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.store = Store(self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_same_draft_is_queued_once(self):
+        _, a = aozora_post.run(PLAIN, {"posts": []}, NOW, True, CREDS, self.store, http=no_network)
+        _, b = aozora_post.run(PLAIN, {"posts": []}, NOW + timedelta(hours=6), True, CREDS,
+                               self.store, http=no_network)
+        self.assertEqual(a["id"], b["id"])
+        self.assertEqual(1, len(self.store.items()))
+
+    def test_timing_limits_do_not_block_queuing(self):
+        code, result = aozora_post.run(PLAIN, {"posts": [at(0)]}, NOW, True, CREDS, self.store,
+                                       http=no_network)
+        self.assertEqual((0, "queued"), (code, result["status"]))
+
+    def test_timing_limits_block_a_direct_send(self):
+        state = {"posts": [at(40), at(0)]}
+        code, result = aozora_post.run(PLAIN, state, NOW, True, CREDS, self.store, http=no_network)
+        self.assertEqual((1, ["too-soon"]), (code, result["reasons"]))
+
+    def test_posting_switch_off_means_dry_run_for_direct_send(self):
+        code, result = aozora_post.run(PLAIN, {"posts": [at(40)]}, NOW, True, CREDS, self.store,
+                                       http=no_network, enabled=False)
+        self.assertEqual((0, "dry-run"), (code, result["status"]))
 
 
 if __name__ == "__main__":
