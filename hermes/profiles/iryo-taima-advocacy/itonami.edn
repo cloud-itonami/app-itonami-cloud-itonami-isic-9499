@@ -10,7 +10,7 @@
  :placement {:mode :local :order [:local] :inference-rail :murakumo}
  :inference {:rails [:murakumo] :authorities ["api.murakumo.cloud"] :deny-hosts ["openrouter.ai"]}
  :state {:workspace :host-local :results :cid-receipts :secrets :never-leave-host}
- :bundle {:cid "bafkreibimlnzhx4fdmtuc4lmib3zhvjdut4lum5at5ova7gt5z6lo6xiwu" :files 11}
+ :bundle {:cid "bafkreiaxx4oc7fhz2ym77mjbdtf5uqny7pdkuei6d6tboopidydix3oogm" :files 11}
  :ids {:repo "cloud-itonami/app-itonami-cloud-itonami-isic-9499"}
  :authority {:default-decision :blocked :source :yakuwari :ref "yakuwari.edn"}
  :capabilities
