@@ -22,7 +22,7 @@
         "expr": "23 */6 * * *",
         "display": "23 */6 * * *"
       },
-      "script": "watch_sources.py",
+      "script": "tick.py",
       "skill": null,
       "skills": [
         "aozora-posting"

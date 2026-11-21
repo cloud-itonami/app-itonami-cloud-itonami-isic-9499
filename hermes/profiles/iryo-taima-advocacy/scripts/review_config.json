@@ -1,4 +1,5 @@
 {
-  "approvers": [],
-  "_note": "Names allowed to approve queued posts (AWAI-3658). Empty until the owner names them; ITONAMI_REVIEW_APPROVERS (comma-separated) overrides this list."
+  "approvers": ["owner"],
+  "posting_enabled": false,
+  "_note": "AWAI-3658. approvers: names accepted by `queue approve/reject --by`; the owner approves during the first 4 weeks (Decision 2026-11-22), ITONAMI_REVIEW_APPROVERS overrides. posting_enabled: real sends stay off until the owner turns this on (go-live conditions in AWAI-3658)."
 }
